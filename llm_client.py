@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-可复用的LLM客户端模块
-功能：
-1. 支持OpenAI兼容的API调用
-2. 支持SQLite缓存以避免重复调用
-3. 支持并行批量调用
-4. 支持JSON格式输出解析
+Reusable LLM client module
+Features:
+1. Support OpenAI compatible API calls
+2. Support SQLite caching to avoid repeated calls
+3. Support parallel batch calls
+4. Support JSON format output parsing
 """
 
 import json
@@ -23,7 +23,7 @@ import httpx
 from openai import OpenAI
 from filelock import FileLock
 
-# 配置日志
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LLMConfig:
-    """LLM配置"""
+    """LLM configuration"""
     model_name: str = "gpt-4o-mini"
     api_key: Optional[str] = None
     base_url: Optional[str] = None
@@ -51,30 +51,30 @@ class LLMConfig:
 
 
 class LLMClient:
-    """LLM客户端，支持缓存和并行调用"""
+    """LLM client, supports caching and parallel calls"""
     
     def __init__(self, config: Optional[LLMConfig] = None):
         """
-        初始化LLM客户端
+        Initialize LLM client
         
         Args:
-            config: LLM配置，为None时使用默认配置
+            config: LLM configuration, uses default configuration if None
         """
         self.config = config or LLMConfig()
         
-        # 创建缓存目录
+        # Create cache directory
         self.cache_dir = Path(self.config.cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        # 缓存文件路径
+        # Cache file path
         safe_model_name = self.config.model_name.replace("/", "_").replace(":", "_")
         self.cache_file = self.cache_dir / f"{safe_model_name}_cache.sqlite"
         self.lock_file = str(self.cache_file) + ".lock"
         
-        # 初始化缓存数据库
+        # Initialize cache database
         self._init_cache_db()
         
-        # 初始化OpenAI客户端
+        # Initialize OpenAI client
         limits = httpx.Limits(max_connections=500, max_keepalive_connections=100)
         client = httpx.Client(
             limits=limits, 
@@ -87,10 +87,10 @@ class LLMClient:
             http_client=client
         )
         
-        logger.info(f"LLM客户端初始化完成: model={self.config.model_name}")
+        logger.info(f"LLM client initialization completed: model={self.config.model_name}")
     
     def _init_cache_db(self):
-        """初始化缓存数据库"""
+        """Initialize cache database"""
         with FileLock(self.lock_file):
             conn = sqlite3.connect(str(self.cache_file))
             c = conn.cursor()
@@ -106,7 +106,7 @@ class LLMClient:
             conn.close()
     
     def _get_cache_key(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        """生成缓存键"""
+        """Generate cache key"""
         key_data = {
             "messages": messages,
             "model": self.config.model_name,
@@ -117,7 +117,7 @@ class LLMClient:
         return hashlib.sha256(key_str.encode("utf-8")).hexdigest()
     
     def _get_from_cache(self, key: str) -> Optional[tuple]:
-        """从缓存获取结果"""
+        """Get result from cache"""
         with FileLock(self.lock_file):
             conn = sqlite3.connect(str(self.cache_file))
             c = conn.cursor()
@@ -129,7 +129,7 @@ class LLMClient:
             return None
     
     def _save_to_cache(self, key: str, response: str, metadata: dict):
-        """保存结果到缓存"""
+        """Save result to cache"""
         with FileLock(self.lock_file):
             conn = sqlite3.connect(str(self.cache_file))
             c = conn.cursor()
@@ -147,25 +147,25 @@ class LLMClient:
         **kwargs
     ) -> tuple[str, dict, bool]:
         """
-        发送聊天请求
+        Send chat request
         
         Args:
-            messages: 聊天消息列表，格式为 [{"role": "user", "content": "..."}]
-            use_cache: 是否使用缓存
-            **kwargs: 其他参数，如temperature, max_tokens等
+            messages: Chat message list, format: [{"role": "user", "content": "..."}]
+            use_cache: Whether to use cache
+            **kwargs: Other parameters, like temperature, max_tokens, etc.
             
         Returns:
             (response_text, metadata, cache_hit)
         """
-        # 检查缓存
+        # Check cache
         cache_key = self._get_cache_key(messages, **kwargs)
         if use_cache:
             cached = self._get_from_cache(cache_key)
             if cached:
-                logger.debug(f"缓存命中: {cache_key[:16]}...")
+                logger.debug(f"Cache hit: {cache_key[:16]}...")
                 return cached[0], cached[1], True
         
-        # 调用API
+        # Call API
         params = {
             "model": self.config.model_name,
             "messages": messages,
@@ -186,18 +186,18 @@ class LLMClient:
                     "model": self.config.model_name,
                 }
                 
-                # 保存到缓存
+                # Save to cache
                 if use_cache:
                     self._save_to_cache(cache_key, response_text, metadata)
                 
                 return response_text, metadata, False
                 
             except Exception as e:
-                logger.warning(f"API调用失败 (尝试 {attempt + 1}/{self.config.max_retries}): {e}")
+                logger.warning(f"API call failed (attempt {attempt + 1}/{self.config.max_retries}): {e}")
                 if attempt == self.config.max_retries - 1:
                     raise
         
-        raise RuntimeError("API调用失败")
+        raise RuntimeError("API call failed")
     
     def chat_json(
         self,
@@ -206,21 +206,21 @@ class LLMClient:
         **kwargs
     ) -> tuple[Any, dict, bool]:
         """
-        发送聊天请求并解析JSON响应
+        Send chat request and parse JSON response
         
         Args:
-            messages: 聊天消息列表
-            use_cache: 是否使用缓存
-            **kwargs: 其他参数
+            messages: Chat message list
+            use_cache: Whether to use cache
+            **kwargs: Other parameters
             
         Returns:
             (parsed_json, metadata, cache_hit)
         """
         response_text, metadata, cache_hit = self.chat(messages, use_cache, **kwargs)
         
-        # 尝试解析JSON
+        # Try to parse JSON
         try:
-            # 处理可能的markdown代码块
+            # Handle possible markdown code blocks
             text = response_text.strip()
             if text.startswith("```json"):
                 text = text[7:]
@@ -232,9 +232,9 @@ class LLMClient:
             parsed = json.loads(text.strip())
             return parsed, metadata, cache_hit
         except json.JSONDecodeError as e:
-            logger.error(f"JSON解析失败: {e}")
-            logger.error(f"原始响应: {response_text[:500]}...")
-            raise ValueError(f"无法解析JSON响应: {e}")
+            logger.error(f"JSON parsing failed: {e}")
+            logger.error(f"Original response: {response_text[:500]}...")
+            raise ValueError(f"Unable to parse JSON response: {e}")
     
     def batch_chat(
         self,
@@ -244,16 +244,16 @@ class LLMClient:
         **kwargs
     ) -> List[tuple[str, dict, bool]]:
         """
-        并行批量聊天请求
+        Parallel batch chat requests
         
         Args:
-            batch_messages: 批量消息列表
-            use_cache: 是否使用缓存
-            show_progress: 是否显示进度
-            **kwargs: 其他参数
+            batch_messages: Batch message list
+            use_cache: Whether to use cache
+            show_progress: Whether to show progress
+            **kwargs: Other parameters
             
         Returns:
-            结果列表，每个元素为 (response_text, metadata, cache_hit)
+            Result list, each element: (response_text, metadata, cache_hit)
         """
         results = [None] * len(batch_messages)
         
@@ -262,7 +262,7 @@ class LLMClient:
                 result = self.chat(messages, use_cache, **kwargs)
                 return idx, result
             except Exception as e:
-                logger.error(f"批量处理索引 {idx} 失败: {e}")
+                logger.error(f"Batch processing index {idx} failed: {e}")
                 return idx, (None, {"error": str(e)}, False)
         
         completed = 0
@@ -280,10 +280,10 @@ class LLMClient:
                 completed += 1
                 
                 if show_progress and completed % 10 == 0:
-                    logger.info(f"进度: {completed}/{total} ({100*completed/total:.1f}%)")
+                    logger.info(f"Progress: {completed}/{total} ({100*completed/total:.1f}%)")
         
         if show_progress:
-            logger.info(f"批量处理完成: {total} 个请求")
+            logger.info(f"Batch processing completed: {total} requests")
         
         return results
     
@@ -295,16 +295,16 @@ class LLMClient:
         **kwargs
     ) -> List[tuple[Any, dict, bool]]:
         """
-        并行批量聊天请求并解析JSON
+        Parallel batch chat requests with JSON parsing
         
         Args:
-            batch_messages: 批量消息列表
-            use_cache: 是否使用缓存
-            show_progress: 是否显示进度
-            **kwargs: 其他参数
+            batch_messages: Batch message list
+            use_cache: Whether to use cache
+            show_progress: Whether to show progress
+            **kwargs: Other parameters
             
         Returns:
-            结果列表，每个元素为 (parsed_json, metadata, cache_hit)
+            Result list, each element: (parsed_json, metadata, cache_hit)
         """
         results = [None] * len(batch_messages)
         
@@ -313,7 +313,7 @@ class LLMClient:
                 result = self.chat_json(messages, use_cache, **kwargs)
                 return idx, result
             except Exception as e:
-                logger.error(f"批量处理索引 {idx} 失败: {e}")
+                logger.error(f"Batch processing index {idx} failed: {e}")
                 return idx, (None, {"error": str(e)}, False)
         
         completed = 0
@@ -331,20 +331,20 @@ class LLMClient:
                 completed += 1
                 
                 if show_progress and completed % 10 == 0:
-                    logger.info(f"进度: {completed}/{total} ({100*completed/total:.1f}%)")
+                    logger.info(f"Progress: {completed}/{total} ({100*completed/total:.1f}%)")
         
         if show_progress:
-            logger.info(f"批量处理完成: {total} 个请求")
+            logger.info(f"Batch processing completed: {total} requests")
         
         return results
 
 
-# 便捷函数
+# Convenience functions
 _default_client: Optional[LLMClient] = None
 
 
 def get_default_client(config: Optional[LLMConfig] = None) -> LLMClient:
-    """获取默认LLM客户端（单例模式）"""
+    """Get default LLM client (singleton pattern)"""
     global _default_client
     if _default_client is None:
         _default_client = LLMClient(config)
@@ -356,7 +356,7 @@ def chat(
     config: Optional[LLMConfig] = None,
     **kwargs
 ) -> tuple[str, dict, bool]:
-    """便捷函数：发送聊天请求"""
+    """Convenience function: send chat request"""
     client = get_default_client(config)
     return client.chat(messages, **kwargs)
 
@@ -366,13 +366,13 @@ def chat_json(
     config: Optional[LLMConfig] = None,
     **kwargs
 ) -> tuple[Any, dict, bool]:
-    """便捷函数：发送聊天请求并解析JSON"""
+    """Convenience function: send chat request and parse JSON"""
     client = get_default_client(config)
     return client.chat_json(messages, **kwargs)
 
 
 if __name__ == "__main__":
-    # 测试示例
+    # Test example
     config = LLMConfig(
         model_name="gpt-4o-mini",
         temperature=0.0,
