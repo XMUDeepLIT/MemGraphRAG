@@ -32,6 +32,12 @@ from .utils.misc_utils import normalize_triple_entry
 from .utils.embed_utils import retrieve_knn
 from .utils.typing import Triple
 from .utils.config_utils import BaseConfig
+from .memory import ThreeLayerMemory
+from .schema_fact_extract import RelationExtractor, TripleWithSchema, ChunkWithEntities
+from .resolve_conflict import ConflictResolver
+from .llm_client import LLMClient, LLMConfig
+import threading
+import queue
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +146,12 @@ class MemGraphRAG:
         # Entity to triples index for fast lookup
         # Key: processed entity string, Value: List of dicts with 'chunk_id', 'triple', 'passage'
         self.entity_to_triples: Dict[str, List[Dict[str, Any]]] = {}
+
+        # Three-layer Memory structure for streaming pipeline
+        self.memory: ThreeLayerMemory = ThreeLayerMemory()
+
+        # Conflict resolution settings
+        self.conflict_resolution_threshold: int = 1  # schema频次>1时触发冲突检测
 
 
     def initialize_graph(self):
@@ -1525,3 +1537,283 @@ class MemGraphRAG:
         sorted_doc_scores = doc_scores[sorted_doc_ids.tolist()]
 
         return sorted_doc_ids, sorted_doc_scores
+
+    def construct_graph(
+        self,
+        docs: List[str],
+        chunk_size: int = 512,
+        max_workers: int = 4,
+        conflict_max_workers: int = 8
+    ):
+        """
+        Parallel streaming pipeline for entity extraction, relation extraction, and conflict resolution.
+
+        Processing flow:
+        1. Chunk documents and extract entities in parallel
+        2. For each chunk, call schema_fact_extract to extract relations and schemas in parallel
+        3. Store results in ThreeLayerMemory
+        4. When schema frequency > 1, perform conflict detection and resolution in parallel
+        5. Write conflict resolution results to Memory
+
+        Parameters:
+            docs: List of documents
+            chunk_size: Number of tokens per chunk
+            max_workers: Number of parallel worker threads for entity and relation extraction
+            conflict_max_workers: Number of parallel worker threads for conflict detection
+        """
+        logger.info(f"Starting construct_graph with {len(docs)} documents")
+
+        # Initialize LLM client
+        llm_config = LLMConfig(
+            model_name=self.global_config.llm_name,
+            base_url=self.global_config.llm_base_url,
+            temperature=0.0,
+            max_workers=max_workers
+        )
+        llm_client = LLMClient(llm_config)
+
+        # Initialize conflict resolver
+        conflict_resolver = ConflictResolver(
+            llm_model=self.llm_model,
+            embedding_model=self.embedding_model,
+            schema_frequency_threshold=self.conflict_resolution_threshold
+        )
+
+        # Initialize relation extractor
+        relation_extractor = RelationExtractor(
+            llm_config=llm_config,
+            max_entities_per_chunk=50
+        )
+
+        # Step 1: Chunk documents and extract entities
+        logger.info("Step 1: Chunking documents and extracting entities...")
+        chunks_with_entities = self._extract_entities_parallel(docs, chunk_size, max_workers)
+
+        # Initialize queue for producer-consumer pattern
+        chunk_queue = queue.Queue()
+        for chunk_data in chunks_with_entities:
+            chunk_queue.put(chunk_data)
+
+        # Add sentinel values to signal worker termination
+        for _ in range(max_workers):
+            chunk_queue.put(None)
+
+        # Thread-safe locks for Memory operations
+        memory_lock = threading.Lock()
+        schema_count_lock = threading.Lock()
+        schema_frequencies: Dict[Tuple[str, str, str], int] = {}
+
+        # Conflict resolution results collector
+        conflict_results: List[Dict[str, Any]] = []
+        conflict_lock = threading.Lock()
+
+        def relation_extraction_worker(worker_id: int):
+            """Worker thread for relation extraction"""
+            while True:
+                chunk_data = chunk_queue.get()
+                if chunk_data is None:
+                    chunk_queue.task_done()
+                    break
+
+                chunk_id, chunk_text, entities = chunk_data
+
+                # Call schema_fact_extract to extract relations and schemas
+                triples_with_schema = relation_extractor.extract_from_chunk_streaming(
+                    chunk_text=chunk_text,
+                    entities=entities,
+                    chunk_id=chunk_id
+                )
+
+                if not triples_with_schema:
+                    chunk_queue.task_done()
+                    continue
+
+                # Write to Memory and check for conflicts
+                for tws in triples_with_schema:
+                    triple_tuple = tws.triple
+                    schema_tuple = tws.schema
+
+                    with memory_lock:
+                        # Get or create passage node
+                        passage_idx = self.memory._get_or_create_passage(chunk_id, chunk_text)
+
+                        # Get or create schema node
+                        schema_idx = self.memory._get_or_create_schema(schema_tuple)
+
+                        # Get or create fact node
+                        fact_idx = self.memory._get_or_create_fact(triple_tuple, schema_idx)
+
+                        # Update frequency statistics
+                        with schema_count_lock:
+                            current_freq = len(self.memory.schema_layer[schema_idx].fact_indices)
+                            schema_frequencies[schema_tuple] = current_freq + 1
+
+                        # Establish inter-layer relationships
+                        schema_node = self.memory.schema_layer[schema_idx]
+                        if fact_idx not in schema_node.fact_indices:
+                            schema_node.fact_indices.append(fact_idx)
+
+                        fact_node = self.memory.fact_layer[fact_idx]
+                        if passage_idx not in fact_node.passage_indices:
+                            fact_node.passage_indices.append(passage_idx)
+
+                        passage_node = self.memory.passage_layer[passage_idx]
+                        if fact_idx not in passage_node.fact_indices:
+                            passage_node.fact_indices.append(fact_idx)
+
+                        # Check if conflict detection is needed
+                        new_freq = len(schema_node.fact_indices)
+                        if new_freq > self.conflict_resolution_threshold:
+                            # Add triple to conflict detector
+                            conflict_resolver.add_triple_for_conflict_check(
+                                triple=triple_tuple,
+                                triple_id=f"fact_{fact_idx}",
+                                source_passage=chunk_text,
+                                schema=schema_tuple
+                            )
+
+                chunk_queue.task_done()
+
+        def conflict_resolution_worker(worker_id: int):
+            """Worker thread for conflict detection and resolution"""
+            while True:
+                # Get schemas that need processing
+                with schema_count_lock:
+                    schemas_to_process = [
+                        schema for schema, freq in schema_frequencies.items()
+                        if freq > self.conflict_resolution_threshold
+                        and conflict_resolver.should_process_schema(schema)
+                    ]
+
+                if not schemas_to_process:
+                    time.sleep(0.1)
+                    continue
+
+                # Process each schema
+                for schema in schemas_to_process:
+                    result = conflict_resolver.check_and_resolve_schema_conflicts(schema)
+                    if result:
+                        with conflict_lock:
+                            conflict_results.append(result)
+                        logger.info(f"Resolved conflict for schema: {schema}")
+
+        # Start relation extraction worker threads
+        relation_workers = []
+        for i in range(max_workers):
+            t = threading.Thread(target=relation_extraction_worker, args=(i,))
+            t.start()
+            relation_workers.append(t)
+
+        # Start conflict resolution worker threads
+        conflict_workers = []
+        for i in range(conflict_max_workers):
+            t = threading.Thread(target=conflict_resolution_worker, args=(i,))
+            t.start()
+            conflict_workers.append(t)
+
+        # Wait for relation extraction to complete
+        for t in relation_workers:
+            t.join()
+
+        # Wait for conflict resolution to complete (with timeout)
+        logger.info("Waiting for conflict resolution to complete...")
+        max_wait_time = 60
+        wait_interval = 2
+        elapsed = 0
+        while elapsed < max_wait_time:
+            pending = conflict_resolver.get_pending_count()
+            if pending == 0:
+                break
+            time.sleep(wait_interval)
+            elapsed += wait_interval
+            logger.info(f"Pending conflicts: {pending}")
+
+        # Force terminate conflict resolution threads
+        for t in conflict_workers:
+            t.join(timeout=5)
+
+        # Output statistics
+        logger.info("=" * 60)
+        logger.info("construct_graph completed!")
+        logger.info(f"  Schema layer: {len(self.memory.schema_layer)} unique schemas")
+        logger.info(f"  Fact layer: {len(self.memory.fact_layer)} unique triples")
+        logger.info(f"  Passage layer: {len(self.memory.passage_layer)} unique chunks")
+        logger.info(f"  Conflicts resolved: {len(conflict_results)}")
+        logger.info("=" * 60)
+
+        return {
+            "num_schemas": len(self.memory.schema_layer),
+            "num_facts": len(self.memory.fact_layer),
+            "num_passages": len(self.memory.passage_layer),
+            "conflicts_resolved": len(conflict_results)
+        }
+
+    def _extract_entities_parallel(
+        self,
+        docs: List[str],
+        chunk_size: int,
+        max_workers: int
+    ) -> List[Tuple[str, str, List[Dict]]]:
+        """
+        Extract entities in parallel.
+
+        Parameters:
+            docs: List of documents
+            chunk_size: Number of tokens per chunk
+            max_workers: Number of parallel worker threads
+
+        Returns:
+            List of (chunk_id, chunk_text, entities) tuples
+        """
+        import spacy
+        try:
+            nlp = spacy.load("en_core_web_trf")
+        except OSError:
+            logger.warning("en_core_web_trf not found, trying en_core_web_sm")
+            nlp = spacy.load("en_core_web_sm")
+
+        def process_doc(doc_text: str) -> List[Tuple[str, str, List[Dict]]]:
+            """Process a single document, return all its chunks and entities"""
+            results = []
+            doc = nlp(doc_text)
+            chunks = []
+
+            # Chunk the document
+            current_tokens = []
+            current_start = 0
+            for i, token in enumerate(doc):
+                current_tokens.append(token)
+                if len(current_tokens) >= chunk_size or i == len(doc) - 1:
+                    if current_tokens:
+                        chunk_start = current_tokens[0].idx
+                        chunk_end = current_tokens[-1].idx + len(current_tokens[-1].text)
+                        chunk_text = doc_text[chunk_start:chunk_end]
+                        chunk_id = compute_mdhash_id(chunk_text, prefix="chunk-")
+                        chunks.append((chunk_id, chunk_text))
+                        current_tokens = []
+
+            # Extract entities from each chunk
+            for chunk_id, chunk_text in chunks:
+                chunk_doc = nlp(chunk_text)
+                entities = []
+                for ent in chunk_doc.ents:
+                    entities.append({
+                        'text': ent.text,
+                        'label': ent.label_,
+                        'start_char': ent.start_char,
+                        'end_char': ent.end_char
+                    })
+                results.append((chunk_id, chunk_text, entities))
+
+            return results
+
+        # Process documents in parallel
+        all_chunks = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_doc, doc): doc for doc in docs}
+            for future in tqdm(futures, desc="Extracting entities"):
+                results = future.result()
+                all_chunks.extend(results)
+
+        logger.info(f"Extracted {len(all_chunks)} chunks with entities")
+        return all_chunks

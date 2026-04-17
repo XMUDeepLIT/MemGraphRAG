@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Union
 from string import Template
 
 import numpy as np
@@ -821,3 +821,215 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def resolve_single_conflict(
+    target_triple: Tuple[str, str, str],
+    conflicting_triples: List[Tuple[Tuple[str, str, str], str]],
+    source_passages: Dict[str, str],
+    llm_model,
+) -> Dict[str, Any]:
+    """
+    Resolve a single conflict using LLM with source passages.
+
+    Parameters
+    ----------
+    target_triple : Tuple[str, str, str]
+        The target triple (head, relation, tail)
+    conflicting_triples : List[Tuple[Tuple[str, str, str], str]]
+        List of (triple, triple_id) that conflict with target
+    source_passages : Dict[str, str]
+        Mapping from triple_id to source passage
+    llm_model :
+        LLM model instance
+
+    Returns
+    -------
+    Dict[str, Any]
+        Resolution result with 'resolved_triples', 'unresolved_conflicts', 'summary'
+    """
+    from prompt import PROMPT
+    from string import Template
+
+    prompt_template = PROMPT['conflict_resolution']
+
+    # Format conflicting triples with sources
+    conflicting_str = ""
+    all_triple_ids = []
+
+    # Add target triple first
+    target_id = "target_triple"
+    target_passage = source_passages.get(target_id, "")
+    conflicting_str += f"Triple: {target_triple}\nID: {target_id}\nSource: {target_passage}\n\n"
+    all_triple_ids.append(target_id)
+
+    # Add conflicting triples
+    for i, (triple, triple_id) in enumerate(conflicting_triples, 1):
+        passage = source_passages.get(triple_id, "No source passage available")
+        conflicting_str += f"Triple {i+1}: {triple}\nID: {triple_id}\nSource: {passage}\n\n"
+        all_triple_ids.append(triple_id)
+
+    # Build user message
+    user_prompt = Template(prompt_template["user"]).substitute(
+        conflicting_triples_with_sources=conflicting_str.strip()
+    )
+
+    messages = [
+        {"role": "system", "content": prompt_template["system"]},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    try:
+        response, metadata = llm_model.infer(messages)
+
+        # Parse JSON response
+        import re
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+        else:
+            json_str = response
+
+        # Try to fix broken JSON
+        try:
+            from src.hipporag.utils.llm_utils import fix_broken_generated_json
+            json_str = fix_broken_generated_json(json_str)
+        except ImportError:
+            pass
+
+        result = json.loads(json_str)
+        return result
+
+    except Exception as e:
+        print(f"Conflict resolution LLM call failed: {e}")
+        return {
+            "resolved_triples": [],
+            "unresolved_conflicts": [{"triple_ids": all_triple_ids, "reason": str(e)}],
+            "summary": f"Resolution failed: {e}"
+        }
+
+
+class ConflictResolver:
+    """
+    Conflict resolver for streaming pipeline.
+    Detects and resolves conflicts when schema frequency exceeds threshold.
+    """
+
+    def __init__(
+        self,
+        llm_model,
+        embedding_model=None,
+        schema_frequency_threshold: int = 1,
+        similarity_threshold: float = 0.9
+    ):
+        """
+        Initialize conflict resolver.
+
+        Parameters
+        ----------
+        llm_model :
+            LLM model instance for conflict detection and resolution
+        embedding_model :
+            Embedding model for similarity calculation
+        schema_frequency_threshold : int
+            Threshold for schema frequency to trigger conflict detection (default: 1)
+        similarity_threshold : float
+            Similarity threshold for finding related triples (default: 0.9)
+        """
+        self.llm_model = llm_model
+        self.embedding_model = embedding_model
+        self.schema_frequency_threshold = schema_frequency_threshold
+        self.similarity_threshold = similarity_threshold
+
+        # Thread-safe tracking
+        import threading
+        self._lock = threading.Lock()
+        self._processed_schemas = set()  # Track processed schema to avoid duplicate work
+        self._pending_conflicts = {}  # schema -> list of (triple, triple_id, source)
+
+    def should_process_schema(self, schema: Tuple[str, str, str]) -> bool:
+        """Check if schema should be processed for conflicts"""
+        if schema in self._processed_schemas:
+            return False
+        return True
+
+    def mark_schema_processing(self, schema: Tuple[str, str, str]):
+        """Mark schema as being processed"""
+        with self._lock:
+            self._processed_schemas.add(schema)
+
+    def add_triple_for_conflict_check(
+        self,
+        triple: Tuple[str, str, str],
+        triple_id: str,
+        source_passage: str,
+        schema: Tuple[str, str, str]
+    ):
+        """
+        Add a triple to the pending conflict check list.
+        When multiple triples share the same schema, they will be checked for conflicts.
+        """
+        with self._lock:
+            if schema not in self._pending_conflicts:
+                self._pending_conflicts[schema] = []
+            self._pending_conflicts[schema].append({
+                "triple": triple,
+                "triple_id": triple_id,
+                "source": source_passage
+            })
+
+    def check_and_resolve_schema_conflicts(
+        self,
+        schema: Tuple[str, str, str]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check and resolve conflicts for a schema that has multiple triples.
+
+        Parameters
+        ----------
+        schema : Tuple[str, str, str]
+            The schema to check (head_type, relation, tail_type)
+
+        Returns
+        -------
+        Optional[Dict[str, Any]]
+            Resolution result if conflicts were found and resolved, None otherwise
+        """
+        with self._lock:
+            triples_info = self._pending_conflicts.get(schema, [])
+            if len(triples_info) <= 1:
+                return None
+
+        # Mark as processed
+        self.mark_schema_processing(schema)
+
+        # Build source passages mapping
+        source_passages = {}
+        for info in triples_info:
+            source_passages[info["triple_id"]] = info["source"]
+
+        # Select target (first triple) and others as conflicting
+        target_triple = triples_info[0]["triple"]
+        target_id = triples_info[0]["triple_id"]
+        conflicting_triples = [
+            (info["triple"], info["triple_id"])
+            for info in triples_info[1:]
+        ]
+
+        # Resolve conflict
+        result = resolve_single_conflict(
+            target_triple=target_triple,
+            conflicting_triples=conflicting_triples,
+            source_passages=source_passages,
+            llm_model=self.llm_model
+        )
+
+        result["schema"] = list(schema)
+        result["num_triples"] = len(triples_info)
+
+        return result
+
+    def get_pending_count(self) -> int:
+        """Get number of pending schemas to process"""
+        with self._lock:
+            return sum(len(v) for v in self._pending_conflicts.values() if len(v) > 1)

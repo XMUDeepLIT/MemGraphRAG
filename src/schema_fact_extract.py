@@ -11,8 +11,10 @@ import os
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
+import threading
+import queue
 
 from llm_client import LLMClient, LLMConfig
 from prompt_builder import build_relation_extraction_messages
@@ -24,6 +26,23 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ChunkWithEntities:
+    """Data class for chunk with extracted entities (used for streaming pipeline)"""
+    chunk_id: str
+    chunk_text: str
+    entities: List[Dict]  # [{'text': ..., 'label': ...}, ...]
+
+
+@dataclass
+class TripleWithSchema:
+    """Data class for extracted triple with schema (used for streaming pipeline)"""
+    triple: Tuple[str, str, str]  # (head, relation, tail)
+    schema: Tuple[str, str, str]   # (head_type, relation, tail_type)
+    chunk_id: str
+    passage: str
 
 
 @dataclass
@@ -173,6 +192,54 @@ class RelationExtractor:
             
         except Exception as e:
             logger.error(f"Chunk {chunk_id} relation extraction failed: {e}")
+            return []
+    
+    def extract_from_chunk_streaming(
+        self,
+        chunk_text: str,
+        entities: List[Dict],
+        chunk_id: str
+    ) -> List[TripleWithSchema]:
+        """
+        Extract relations from a single chunk for streaming pipeline.
+        Returns TripleWithSchema objects instead of RelationTriple.
+        
+        Args:
+            chunk_text: Chunk text
+            entities: Entity list in the chunk
+            chunk_id: Chunk ID (string)
+            
+        Returns:
+            List of TripleWithSchema objects
+        """
+        filtered_entities = self.filter_entities(entities)
+        
+        if len(filtered_entities) < 2:
+            logger.debug(f"Chunk {chunk_id}: Insufficient entities, skipping")
+            return []
+        
+        messages = build_relation_extraction_messages(chunk_text, filtered_entities)
+        
+        try:
+            response, metadata, cache_hit = self.llm_client.chat_json(messages)
+            
+            triples_with_schema = []
+            if isinstance(response, list):
+                for item in response:
+                    if self._validate_relation(item):
+                        triple_tuple = (item["head"], item["relation"], item["tail"])
+                        schema_tuple = (item["head_type"], item["relation"], item["tail_type"])
+                        triples_with_schema.append(TripleWithSchema(
+                            triple=triple_tuple,
+                            schema=schema_tuple,
+                            chunk_id=chunk_id,
+                            passage=chunk_text
+                        ))
+            
+            return triples_with_schema
+            
+        except Exception as e:
+            logger.error(f"Chunk {chunk_id} streaming extraction failed: {e}")
             return []
     
     def _validate_relation(self, item: dict) -> bool:
