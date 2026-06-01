@@ -1,4 +1,4 @@
-# MemGraphRAG
+# 【KDD 2026】MemGraphRAG: Memory-based Multi-Agent System for Graph Retrieval-Augmented Generation
 
 A three-layer memory structure for knowledge graph retrieval and generation, designed to organize extracted information into a hierarchical memory system with inter-layer connections.
 
