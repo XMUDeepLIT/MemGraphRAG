@@ -16,6 +16,11 @@ A three-layer memory structure for knowledge graph retrieval and generation, des
 - **[2025-05-14]** We release the [GraphRAG Benchmark dataset](https://huggingface.co/datasets/GraphRAG-Bench/GraphRAG-Bench).
 - **[2025-01-21]** We release the [GraphRAG survey](https://github.com/DEEP-PolyU/Awesome-GraphRAG).
 
+
+📃 **Please [cite our paper](#-citation)** if you find our survey or repository helpful!
+
+📫 **Contact us via emails:** `{xiangzhishang,wuchuanjie}@stu.xmu.edu.cn`, `qinggangzhang@jlu.edu.cn`
+
 ---
 
 ## Overview
@@ -179,3 +184,14 @@ result = detect_triple_conflicts(
 - httpx
 - filelock
 
+# 🍀 Citation 
+If you find this survey helpful, please cite our paper:
+
+```
+@article{wu2026memgraphrag,
+  title={MemGraphRAG: Memory-based Multi-Agent System for Graph Retrieval-Augmented Generation},
+  author={Wu, Chuanjie and Xiang, Zhishang and Tang, Yunbo and Chen, Zerui and Zhang, Qinggang and Su, Jinsong},
+  journal={arXiv preprint arXiv:2606.00610},
+  year={2026}
+}
+```
