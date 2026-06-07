@@ -17,11 +17,10 @@ A three-layer memory structure for knowledge graph retrieval and generation, des
 - **[2025-01-21]** We release the [GraphRAG survey](https://github.com/DEEP-PolyU/Awesome-GraphRAG).
 
 
-📃 **Please [cite our paper](#-citation)** if you find our survey or repository helpful!
+📃 **Please [cite our paper](#-citation)** if you find our method or repository helpful!
 
 📫 **Contact us via emails:** `{xiangzhishang,wuchuanjie}@stu.xmu.edu.cn`, `qinggangzhang@jlu.edu.cn`
 
----
 
 ## Overview
 
