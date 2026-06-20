@@ -41,7 +41,7 @@ MemGraphRAG organizes knowledge into three connected layers:
 - **Passage layer:** original text chunks that support the facts.
 
 
-###🔥 Key Features
+### Key Features
 
 - **Three-layer memory:** bidirectional links among schemas, facts, and source passages.
 - **Ontology induction:** abstracts facts into reusable schemas and filters low-frequency patterns.
