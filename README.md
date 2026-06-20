@@ -1,6 +1,14 @@
-# 【KDD 2026】MemGraphRAG: Memory-based Multi-Agent System for Graph Retrieval-Augmented Generation
+# MemGraphRAG: Memory-based Multi-Agent System for Graph Retrieval-Augmented Generation
 
-A three-layer memory structure for knowledge graph retrieval and generation, designed to organize extracted information into a hierarchical memory system with inter-layer connections.
+<div align="center">
+  <a href="https://arxiv.org/abs/2606.00610"><img src="https://img.shields.io/badge/Paper-arXiv-red?logo=arxiv&style=flat-square" alt="arXiv"></a>
+  <a href="https://github.com/XMUDeepLIT/MemGraphRAG"><img src="https://img.shields.io/github/stars/XMUDeepLIT/MemGraphRAG?style=flat-square" alt="GitHub Stars"></a>
+  <a href="https://github.com/XMUDeepLIT/MemGraphRAG/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="License"></a>
+</div>
+
+<br>
+
+> A memory-enhanced GraphRAG framework that connects unstructured passages, extracted facts, and abstract schemas in a three-layer memory for reliable retrieval and generation.
 
 ## 🎉 News
 - **[2026-05-17]** Our **[MemGraphRAG](https://github.com/XMUDeepLIT/MemGraphRAG)** for memory-enhanced RAG is accepted by KDD'26.
@@ -16,177 +24,177 @@ A three-layer memory structure for knowledge graph retrieval and generation, des
 - **[2025-05-14]** We release the [GraphRAG Benchmark dataset](https://huggingface.co/datasets/GraphRAG-Bench/GraphRAG-Bench).
 - **[2025-01-21]** We release the [GraphRAG survey](https://github.com/DEEP-PolyU/Awesome-GraphRAG).
 
+📃 Please [cite our paper](#-citation) if you find this repository helpful.
 
-📃 **Please [cite our paper](#-citation)** if you find our method or repository helpful!
+📫 Contact: `{xiangzhishang,wuchuanjie}@stu.xmu.edu.cn`, `qinggangzhang@jlu.edu.cn`
 
-📫 **Contact us via emails:** `{xiangzhishang,wuchuanjie}@stu.xmu.edu.cn`, `qinggangzhang@jlu.edu.cn`
+## 🏴 Overview
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/XMUDeepLIT/MemGraphRAG/main/framework.png" width="90%" alt="MemGraphRAG Framework"/>
+</p>
+
+MemGraphRAG organizes knowledge into three connected layers:
+
+- **Schema layer:** abstract ontology triples such as `(head type, relation, tail type)`.
+- **Fact layer:** concrete relation triples extracted from the corpus.
+- **Passage layer:** original text chunks that support the facts.
 
 
-## Overview
+###🔥 Key Features
 
-MemGraphRAG implements a three-layer memory architecture that bridges unstructured text passages with structured knowledge graphs:
+- **Three-layer memory:** bidirectional links among schemas, facts, and source passages.
+- **Ontology induction:** abstracts facts into reusable schemas and filters low-frequency patterns.
+- **Conflict-aware construction:** detects hard conflicts with passage evidence and resolves connected conflict groups.
+- **Memory-derived graph:** creates type, entity, and passage nodes after conflict resolution.
+- **Graph-enhanced retrieval:** combines embedding similarity and Personalized PageRank.
+- **Batch QA:** records answers, retrieved documents, scores, latency, and token usage.
 
-![Framework](framework.png)
+---
 
-## Architecture
+## 🛠 Quickstart Guide
 
-### 1. Entity Extraction (`entity_type_extract.py`)
+### 1. Environment Setup
 
-Extracts named entities from text using spaCy's transformer-based model:
-
-- Splits text into chunks of fixed token length (default: 512 tokens)
-- Uses `en_core_web_trf` model for entity recognition
-- Outputs entities with text, label, start/end character positions
-
-### 2. Relation Extraction (`schema_fact_extract.py`)
-
-Extracts relations between entities using LLM:
-
-- Takes entity-extracted chunks as input
-- Uses LLM to identify meaningful relations between entities
-- Outputs relation triples: `(head, relation, tail)` with types: `(head_type, relation, tail_type)`
-- Supports batch parallel processing
-
-### 3. LLM Client (`llm_client.py`)
-
-Reusable LLM client with advanced features:
-
-- OpenAI-compatible API support
-- SQLite-based response caching
-- Parallel batch request processing
-- Automatic JSON response parsing
-- Configurable retry mechanism
-
-### 4. Prompt System (`prompt.py`, `prompt_builder.py`)
-
-Contains prompts for various tasks:
-
-- **Relation Extraction**: Extract structured triples from entities
-- **Conflict Detection**: Identifies three conflict types:
-  - Mutual conflict (one-to-one relations)
-  - Temporal conflict (time-dependent facts)
-  - Granularity conflict (different specificity levels)
-- **Conflict Resolution**: Resolves conflicts using source passages
-
-### 5. Ontology Filtering (`ontology_filtering.py`)
-
-Filters and enriches extracted knowledge:
-
-- Removes low-frequency ontologies
-- Adds metadata fields:
-  - `unique_ontologies`: Unique schema patterns per chunk
-  - `entity_mapping`: Type-entity correspondences
-
-### 6. Three-Layer Memory (`memory.py`)
-
-Core memory structure implementation:
-
-- **Schema Layer**: Stores ontology patterns (type triples)
-- **Fact Layer**: Stores extracted triples
-- **Passage Layer**: Stores original text chunks
-- Inter-layer index relationships for bidirectional navigation
-- Serialization support (JSON save/load)
-
-### 7. Conflict Resolution (`resolve_conflict.py`)
-
-Detects and resolves triple conflicts:
-
-- Finds related triples by shared entities
-- Uses embedding similarity to find semantically similar facts
-- LLM-based conflict classification
-- Resolution strategies: keep, discard, or modify
-
-## Installation
+Python 3.10 or later is recommended. The online pipeline uses an OpenAI-compatible LLM endpoint and a local Hugging Face embedding model.
 
 ```bash
-pip install spacy httpx openai filelock numpy pandas
+conda create -n memgraphrag python=3.10
+conda activate memgraphrag
 
-# Download spaCy model
-python -m spacy download en_core_web_trf
+git clone https://github.com/XMUDeepLIT/MemGraphRAG.git
+cd MemGraphRAG
+pip install -r requirements.txt
 ```
 
-## Usage
+For offline OpenIE, also install `vllm` or `llama-factory`. Optional embedding backends may require packages such as `gritlm`.
 
-### Step 1: Entity Extraction
+### 2. Configure Models and Credentials
 
-```python
-from entity_type_extract import EntityExtractor
+```bash
+export OPENAI_API_KEY="your-api-key"
+export CUDA_VISIBLE_DEVICES="0"
 
-extractor = EntityExtractor(
-    model_name="en_core_web_trf",
-    chunk_size=512
-)
-
-extractor.process_file("input.txt", "output_entities.json")
+LLM_NAME="gpt-4o-mini"
+LLM_BASE_URL="https://your-openai-compatible-endpoint/v1"
+EMBEDDING_MODEL="/path/to/bge-large-en-v1.5"
 ```
 
-### Step 2: Relation Extraction
+Use the same `LLM_NAME` and `EMBEDDING_MODEL` for indexing and retrieval because their values identify the saved graph and embedding stores.
 
-```python
-from schema_fact_extract import RelationExtractor
-from llm_client import LLMConfig
+### 3. Run Indexing
 
-llm_config = LLMConfig(
-    model_name="gpt-4o-mini",
-    temperature=0.0
-)
+Run from the repository root. The corpus must be a UTF-8 plain-text file.
 
-extractor = RelationExtractor(llm_config=llm_config)
-extractor.process_file("output_entities.json", "output_relations.json")
+```bash
+python code/index.py \
+  --corpus datasets/corpus/corpus.txt \
+  --save-dir outputs/corpus \
+  --llm-name "$LLM_NAME" \
+  --llm-base-url "$LLM_BASE_URL" \
+  --embedding-model "$EMBEDDING_MODEL" \
+  --tokenizer "$EMBEDDING_MODEL" \
+  --chunk-size 256 \
+  --chunk-overlap 32 \
+  --artifact-mode default
 ```
 
-### Step 3: Build Memory Structure
+Add `--force-index-from-scratch` and `--force-openie-from-scratch` to rebuild the corresponding caches.
 
-```python
-from memory import ThreeLayerMemory, load_openie_results
-
-data = load_openie_results("filtered_results.json")
-memory = ThreeLayerMemory()
-memory.build_from_openie_results(data)
-
-# Save memory
-memory.save("memory.json")
+```text
+outputs/corpus/
+├── openie_results_ner_<llm>.json
+├── initial_memory_with_schema.json
+├── memory.json
+├── graph_from_memory/
+│   ├── memory_graph.json
+│   └── memory_graph.graphml
+└── <llm>_<embedding_model>/
+    ├── graph.graphml
+    ├── chunk_embeddings/
+    ├── entity_embeddings/
+    └── fact_embeddings/
 ```
 
-### Step 4: Conflict Detection & Resolution
+### 4. Run Retrieval and Question Answering
 
-```python
-from resolve_conflict import detect_triple_conflicts, load_all_triples_with_ids
-
-triple_list, triple_ids = load_all_triples_with_ids("openie_results.json")
-
-result = detect_triple_conflicts(
-    triple_list=triple_list,
-    triple_ids=triple_ids,
-    llm_model=llm_model,
-    embedding_model=embedding_model,
-    fact_id_to_fact=fact_id_to_fact
-)
+```bash
+python code/retrieval_dataset_test.py \
+  --questions datasets/corpus/small-questions.json \
+  --save-dir outputs/corpus \
+  --output results/corpus/qa_results.json \
+  --llm-name "$LLM_NAME" \
+  --llm-base-url "$LLM_BASE_URL" \
+  --embedding-model "$EMBEDDING_MODEL" \
+  --question-type all \
+  --sample-num 0 \
+  --skip-fact-rerank true \
+  --fact-similarity-threshold 0.4 \
+  --use-raw-threshold-filter true
 ```
 
-## Key Features
+The result JSON contains the run summary, effective configuration, solutions, raw responses, metadata, retrieved passages. 
 
-- **Hierarchical Organization**: Three-layer structure from abstract schemas to concrete passages
-- **Bidirectional Indexing**: Navigate between layers via index relationships
-- **Semantic Search**: Vector-based similarity search across facts
-- **Conflict Resolution**: Automated detection and resolution of contradictory facts
-- **Caching**: SQLite-based caching for LLM responses
-- **Parallel Processing**: Efficient batch processing for large datasets
+`code/run_index.sh` and `code/run_retrieval_test.sh` are editable launch templates. Adjust their interpreter, paths, endpoint, model, and GPU settings before use.
 
-## Dependencies
+## 📝 Dataset Format
 
-- Python 3.8+
-- spaCy (with transformer model)
-- OpenAI SDK
-- NumPy
-- Pandas
-- httpx
-- filelock
+The QA runner accepts a flat list of question objects or questions grouped by type:
 
-# 🍀 Citation 
-If you find this survey helpful, please cite our paper:
-
+```json
+[
+  {
+    "source": "dataset-name",
+    "questions": {
+      "type1": [
+        {
+          "id": "type1_0",
+          "question": "Your question",
+          "answer": "Gold answer",
+          "evidence": ["Optional supporting evidence"]
+        }
+      ]
+    }
+  }
+]
 ```
+
+Set `--question-type type1` for one group or `--question-type all` for all groups. `--sample-num 0` loads every question.
+
+## 📦 Code Structure
+
+```text
+📦 .
+├── 📂 code
+│   ├── 📂 src
+│   │   ├── 📂 embedding_model        # Embedding backends
+│   │   ├── 📂 evaluation             # Retrieval and QA metrics
+│   │   ├── 📂 information_extraction # Online and offline OpenIE
+│   │   ├── 📂 llm                    # OpenAI-compatible and vLLM backends
+│   │   ├── 📂 prompts                # Extraction, linking, QA, memory prompts
+│   │   ├── 📂 utils                  # Configuration and utilities
+│   │   ├── MemGraphRAG.py            # Pipeline orchestration
+│   │   ├── Memory.py                 # Three-layer memory
+│   │   ├── embedding_store.py        # Persistent embedding stores
+│   │   └── rerank.py                 # Fact reranking and filtering
+│   ├── index.py                      # Indexing CLI
+│   ├── retrieval_dataset_test.py     # Retrieval and QA CLI
+│   ├── run_index.sh                  # Indexing template
+│   └── run_retrieval_test.sh         # Retrieval template
+├── 📂 datasets                       # Example corpora and QA datasets
+├── 📂 outputs                        # Generated artifacts
+└── 📜 README.md
+```
+
+---
+
+## 🙏 Acknowledgements
+
+Our framework builds upon the excellent work [HippoRAG](https://github.com/OSU-NLP-Group/HippoRAG). We also thank the open-source communities behind Hugging Face Transformers, OpenAI-compatible APIs, and igraph.
+
+## 🍀 Citation
+
+```bibtex
 @article{wu2026memgraphrag,
   title={MemGraphRAG: Memory-based Multi-Agent System for Graph Retrieval-Augmented Generation},
   author={Wu, Chuanjie and Xiang, Zhishang and Tang, Yunbo and Chen, Zerui and Zhang, Qinggang and Su, Jinsong},
@@ -194,3 +202,9 @@ If you find this survey helpful, please cite our paper:
   year={2026}
 }
 ```
+
+**Links:** [arXiv](https://arxiv.org/abs/2606.00610)
+
+## 📄 License
+
+This project is released under the [MIT License](https://github.com/XMUDeepLIT/MemGraphRAG/blob/main/LICENSE).
