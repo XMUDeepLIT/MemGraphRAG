@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 使用的 GPU 编号
 export CUDA_VISIBLE_DEVICES="0"
+PYTHON="${PYTHON:-python3}"
 
 # OpenAI 兼容接口的 API Key；使用无鉴权的本地服务时可留空
 export OPENAI_API_KEY=
