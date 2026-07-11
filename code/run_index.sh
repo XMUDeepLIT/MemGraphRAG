@@ -9,6 +9,7 @@ OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 : "${OPENAI_API_KEY:?Set OPENAI_API_KEY before running run_index.sh}"
 export OPENAI_API_KEY
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+PYTHON="${PYTHON:-python3}"
 
 # Input and model parameters.
 CORPUS="/home/wcj/data/project/memgraphrag/input/smallcorpus/smallcorpus.txt"
